@@ -88,7 +88,10 @@ pnpm install
 复制 `.env.example` 为 `.env.local` 并配置:
 
 ```bash
-OPENAI_API_KEY=sk-xxxx  # OpenAI API 密钥
+OPENAI_API_KEY=sk-xxxx  # OpenAI API 密钥（如使用 OpenAI）
+LOG_LEVEL=debug|info|warn|error      # 服务端日志级别
+LOG_PRETTY=true|false                # 开发环境 pretty 日志
+NEXT_PUBLIC_LOG_LEVEL=debug|info|warn|error  # 前端日志级别
 ```
 
 ### 开发命令
@@ -185,18 +188,16 @@ pnpm lint:fix   # 自动修复代码问题
 
 ### API 路由模式
 
-聊天 API 位于 `app/api/chat/route.ts`:
+聊天 API 位于 `app/api/chat/route.ts`（Agent 适配层）:
 
 ```typescript
-import { openai } from "@ai-sdk/openai";
-import { streamText, convertToModelMessages } from "ai";
+import { runAgent } from "@/lib/agent/runtime";
+import { getActiveLLMConfig } from "@/lib/server/llm-config-store";
 
 export async function POST(req: Request) {
   const { messages } = await req.json();
-  const result = streamText({
-    model: openai.responses("gpt-5-nano"),
-    messages: await convertToModelMessages(messages),
-  });
+  const active = await getActiveLLMConfig();
+  const result = await runAgent({ messages, llmConfig: active });
   return result.toUIMessageStreamResponse({ sendReasoning: true });
 }
 ```
@@ -211,7 +212,9 @@ import { useConfigStore } from "@/lib/config-store";
 const { llmConfigs, addLLMConfig, dbConfigs, addDBConfig } = useConfigStore();
 ```
 
-**安全提示**: API 密钥和数据库密码不会持久化到 localStorage。
+**安全提示**:
+- LLM 配置已迁移到服务端持久化（`data/llm-configs.json`），需在 `/admin` 设置并激活。
+- 数据库密码仍不会持久化到 localStorage。
 
 ## 关键文件清单
 
@@ -221,6 +224,12 @@ const { llmConfigs, addLLMConfig, dbConfigs, addDBConfig } = useConfigStore();
 | `app/api/chat/route.ts` | AI 聊天 API 端点 |
 | `lib/database.ts` | 多数据库连接测试逻辑 |
 | `lib/config-store.ts` | Zustand 状态 store |
+| `lib/agent/runtime.ts` | Agent 运行时 |
+| `lib/agent/providers.ts` | 模型 Provider 工厂 |
+| `lib/server/llm-config-store.ts` | LLM 配置服务端持久化 |
+| `app/api/admin/llm-configs/route.ts` | LLM 配置 CRUD API |
+| `lib/logger/server.ts` | 服务端日志封装 |
+| `lib/logger/client.ts` | 前端日志封装 |
 | `components/admin/admin-layout.tsx` | 管理后台布局 |
 | `components/admin/llm-config-panel.tsx` | LLM Provider 配置面板 |
 | `components/admin/database-config-panel.tsx` | 数据库配置面板 |
