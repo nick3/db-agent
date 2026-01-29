@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Plus,
@@ -17,7 +17,12 @@ import {
   Key,
   Box,
 } from "lucide-react";
-import { useConfigStore, type LLMConfig } from "@/lib/config-store";
+import {
+  useConfigStore,
+  type LLMConfig,
+  type OpenAICompatibleApiMode,
+} from "@/lib/config-store";
+import { logger } from "@/lib/logger/client";
 import { cn } from "@/lib/utils";
 
 const providers = [
@@ -27,13 +32,47 @@ const providers = [
 ] as const;
 
 const defaultModels: Record<string, string[]> = {
-  anthropic: ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-3-5-haiku-20241022"],
+  anthropic: [
+    "claude-sonnet-4-20250514",
+    "claude-opus-4-20250514",
+    "claude-3-5-haiku-20241022",
+  ],
   openai: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
   custom: [],
 };
 
+function getDefaultApiMode(
+  provider: LLMConfig["provider"],
+): OpenAICompatibleApiMode | undefined {
+  switch (provider) {
+    case "openai":
+      return "responses";
+    case "custom":
+      return "chat";
+    default:
+      return undefined;
+  }
+}
+
+function getResolvedApiMode(
+  provider: LLMConfig["provider"] | undefined,
+  apiMode: LLMConfig["apiMode"] | undefined,
+): OpenAICompatibleApiMode | undefined {
+  if (!provider || provider === "anthropic") {
+    return undefined;
+  }
+
+  return (apiMode ?? getDefaultApiMode(provider)) as
+    | OpenAICompatibleApiMode
+    | undefined;
+}
+
+function getApiModeLabel(apiMode: OpenAICompatibleApiMode) {
+  return apiMode === "responses" ? "Responses" : "Chat Completions";
+}
+
 export function LLMConfigPanel() {
-  const { llmConfigs, addLLMConfig, updateLLMConfig, deleteLLMConfig, setActiveLLM } = useConfigStore();
+  const { llmConfigs, setLLMConfigs } = useConfigStore();
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
@@ -58,6 +97,23 @@ export function LLMConfigPanel() {
     });
   };
 
+  const loadConfigs = useCallback(async () => {
+    try {
+      const response = await fetch("/api/admin/llm-configs");
+      if (!response.ok) {
+        throw new Error("Failed to load LLM configs");
+      }
+      const data = (await response.json()) as { configs?: LLMConfig[] };
+      setLLMConfigs(data.configs ?? []);
+    } catch (error) {
+      logger.error({ err: error }, "Failed to load LLM configs");
+    }
+  }, [setLLMConfigs]);
+
+  useEffect(() => {
+    void loadConfigs();
+  }, [loadConfigs]);
+
   const handleProviderChange = (provider: LLMConfig["provider"]) => {
     const providerInfo = providers.find((p) => p.value === provider);
     setFormData({
@@ -65,20 +121,51 @@ export function LLMConfigPanel() {
       provider,
       baseUrl: providerInfo?.defaultUrl || "",
       modelName: defaultModels[provider]?.[0] || "",
+      apiMode: getDefaultApiMode(provider),
     });
   };
 
-  const handleSubmit = () => {
-    if (!formData.name || !formData.apiKey || !formData.modelName) return;
+  const handleSubmit = async () => {
+    if (!formData.name || !formData.apiKey || !formData.modelName || !formData.provider) return;
 
-    if (editingId) {
-      updateLLMConfig(editingId, formData);
-      setEditingId(null);
-    } else {
-      addLLMConfig(formData as Omit<LLMConfig, "id" | "createdAt">);
-      setIsAdding(false);
+    const payload = {
+      name: formData.name,
+      provider: formData.provider,
+      baseUrl: formData.baseUrl ?? "",
+      apiKey: formData.apiKey,
+      modelName: formData.modelName,
+      apiMode: getResolvedApiMode(formData.provider, formData.apiMode),
+    };
+
+    try {
+      const response = await fetch("/api/admin/llm-configs", {
+        method: editingId ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          editingId
+            ? {
+                ...payload,
+                id: editingId,
+              }
+            : payload
+        ),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to save LLM config");
+      }
+
+      await loadConfigs();
+
+      if (editingId) {
+        setEditingId(null);
+      } else {
+        setIsAdding(false);
+      }
+      resetForm();
+    } catch (error) {
+      logger.error({ err: error }, "Failed to save LLM config");
     }
-    resetForm();
   };
 
   const handleEdit = (config: LLMConfig) => {
@@ -91,6 +178,42 @@ export function LLMConfigPanel() {
     setIsAdding(false);
     setEditingId(null);
     resetForm();
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      const response = await fetch("/api/admin/llm-configs", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to delete LLM config");
+      }
+
+      await loadConfigs();
+    } catch (error) {
+      logger.error({ err: error }, "Failed to delete LLM config");
+    }
+  };
+
+  const handleSetActive = async (id: string) => {
+    try {
+      const response = await fetch("/api/admin/llm-configs", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, setActive: true }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to set active LLM config");
+      }
+
+      await loadConfigs();
+    } catch (error) {
+      logger.error({ err: error }, "Failed to set active LLM config");
+    }
   };
 
   return (
@@ -220,6 +343,37 @@ export function LLMConfigPanel() {
                   )}
                 </div>
 
+                {(formData.provider === "openai" ||
+                  formData.provider === "custom") && (
+                  <div className="space-y-2 md:col-span-2">
+                    <label className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-[#6a6a7a]">
+                      <Zap className="h-3 w-3" />
+                      API Mode
+                    </label>
+                    <select
+                      value={
+                        getResolvedApiMode(formData.provider, formData.apiMode) ??
+                        "chat"
+                      }
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          apiMode: e.target.value as OpenAICompatibleApiMode,
+                        })
+                      }
+                      className="w-full rounded-lg border border-[#1a1a2e] bg-[#0a0a0f] px-4 py-3 text-sm text-white outline-none transition-all focus:border-emerald-500/50 focus:ring-2 focus:ring-emerald-500/20"
+                    >
+                      <option value="responses">Responses (/v1/responses)</option>
+                      <option value="chat">
+                        Chat Completions (/v1/chat/completions)
+                      </option>
+                    </select>
+                    <p className="text-xs text-[#3a3a4a]">
+                      Select the API shape your gateway/provider supports.
+                    </p>
+                  </div>
+                )}
+
                 {/* API Key */}
                 <div className="space-y-2 md:col-span-2">
                   <label className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-[#6a6a7a]">
@@ -244,7 +398,7 @@ export function LLMConfigPanel() {
                   </div>
                   <p className="flex items-center gap-1.5 text-xs text-amber-400/70">
                     <AlertCircle className="h-3 w-3" />
-                    API keys are stored locally and never sent to our servers
+                    API keys are stored on the server and only used to call your provider
                   </p>
                 </div>
               </div>
@@ -261,7 +415,7 @@ export function LLMConfigPanel() {
                 <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
-                  onClick={handleSubmit}
+                  onClick={() => void handleSubmit()}
                   disabled={!formData.name || !formData.apiKey || !formData.modelName}
                   className="flex items-center gap-2 rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-black transition-all hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
                 >
@@ -299,6 +453,7 @@ export function LLMConfigPanel() {
           ) : (
             llmConfigs.map((config, index) => {
               const providerInfo = providers.find((p) => p.value === config.provider);
+              const apiMode = getResolvedApiMode(config.provider, config.apiMode);
               return (
                 <motion.div
                   key={config.id}
@@ -346,9 +501,21 @@ export function LLMConfigPanel() {
                             {providerInfo?.label}
                           </span>
                           <span className="text-[#3a3a4a]">•</span>
-                          <span className="font-mono text-[#6a6a7a]">{config.modelName}</span>
+                          <span className="font-mono text-[#6a6a7a]">
+                            {config.modelName}
+                          </span>
+                          {apiMode && (
+                            <>
+                              <span className="text-[#3a3a4a]">•</span>
+                              <span className="text-[#6a6a7a]">
+                                {getApiModeLabel(apiMode)}
+                              </span>
+                            </>
+                          )}
                           <span className="text-[#3a3a4a]">•</span>
-                          <span className="font-mono text-[#4a4a5a]">{config.baseUrl}</span>
+                          <span className="font-mono text-[#4a4a5a]">
+                            {config.baseUrl}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -356,7 +523,7 @@ export function LLMConfigPanel() {
                     <div className="flex items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100">
                       {!config.isActive && (
                         <button
-                          onClick={() => setActiveLLM(config.id)}
+                          onClick={() => void handleSetActive(config.id)}
                           className="rounded-lg border border-[#1a1a2e] bg-[#0a0a0f] px-3 py-1.5 text-xs font-medium text-[#6a6a7a] transition-all hover:border-emerald-500/30 hover:text-emerald-400"
                         >
                           Set Active
@@ -369,7 +536,7 @@ export function LLMConfigPanel() {
                         <Edit3 className="h-4 w-4" />
                       </button>
                       <button
-                        onClick={() => deleteLLMConfig(config.id)}
+                        onClick={() => void handleDelete(config.id)}
                         className="rounded-lg border border-[#1a1a2e] p-2 text-[#4a4a5a] transition-all hover:border-red-500/30 hover:text-red-400"
                       >
                         <Trash2 className="h-4 w-4" />
