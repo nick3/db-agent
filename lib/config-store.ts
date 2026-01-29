@@ -2,6 +2,8 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 // LLM Provider Configuration
+export type OpenAICompatibleApiMode = "responses" | "chat";
+
 export interface LLMConfig {
   id: string;
   name: string;
@@ -9,6 +11,14 @@ export interface LLMConfig {
   baseUrl: string;
   apiKey: string;
   modelName: string;
+
+  /**
+   * OpenAI / OpenAI-compatible API mode (primarily for custom providers).
+   * - responses: /v1/responses
+   * - chat: /v1/chat/completions
+   */
+  apiMode?: OpenAICompatibleApiMode;
+
   isActive: boolean;
   createdAt: number;
 }
@@ -29,8 +39,9 @@ export interface DatabaseConfig {
 }
 
 interface ConfigStore {
-  // LLM Configs
+  // LLM Configs (server-sourced)
   llmConfigs: LLMConfig[];
+  setLLMConfigs: (configs: LLMConfig[]) => void;
   addLLMConfig: (config: Omit<LLMConfig, "id" | "createdAt">) => void;
   updateLLMConfig: (id: string, config: Partial<LLMConfig>) => void;
   deleteLLMConfig: (id: string) => void;
@@ -53,6 +64,7 @@ export const useConfigStore = create<ConfigStore>()(
     (set) => ({
       // LLM State
       llmConfigs: [],
+      setLLMConfigs: (configs) => set({ llmConfigs: configs }),
       addLLMConfig: (config) =>
         set((state) => ({
           llmConfigs: [
@@ -67,7 +79,7 @@ export const useConfigStore = create<ConfigStore>()(
       updateLLMConfig: (id, config) =>
         set((state) => ({
           llmConfigs: state.llmConfigs.map((c) =>
-            c.id === id ? { ...c, ...config } : c
+            c.id === id ? { ...c, ...config } : c,
           ),
         })),
       deleteLLMConfig: (id) =>
@@ -98,7 +110,7 @@ export const useConfigStore = create<ConfigStore>()(
       updateDBConfig: (id, config) =>
         set((state) => ({
           dbConfigs: state.dbConfigs.map((c) =>
-            c.id === id ? { ...c, ...config } : c
+            c.id === id ? { ...c, ...config } : c,
           ),
         })),
       deleteDBConfig: (id) =>
@@ -120,9 +132,9 @@ export const useConfigStore = create<ConfigStore>()(
     {
       name: "db-agent-config",
       partialize: (state) => ({
-        llmConfigs: state.llmConfigs.map((c) => ({ ...c, apiKey: "" })), // Don't persist API keys
+        // LLM configs are server-sourced; only persist DB configs locally.
         dbConfigs: state.dbConfigs.map((c) => ({ ...c, password: "" })), // Don't persist passwords
       }),
-    }
-  )
+    },
+  ),
 );

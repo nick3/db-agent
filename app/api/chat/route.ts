@@ -1,21 +1,38 @@
-import { openai } from "@ai-sdk/openai";
-import { streamText, convertToModelMessages, type UIMessage } from "ai";
+import { NextResponse } from "next/server";
+import type { UIMessage } from "ai";
+import { runAgent } from "@/lib/agent/runtime";
+import { logger } from "@/lib/logger/server";
+import { getActiveLLMConfig } from "@/lib/server/llm-config-store";
 
 export async function POST(req: Request) {
-  const { messages }: { messages: UIMessage[] } = await req.json();
+  try {
+    const body = (await req.json()) as { messages?: UIMessage[] };
 
-  const result = streamText({
-    model: openai.responses("gpt-5-nano"),
-    messages: await convertToModelMessages(messages),
-    providerOptions: {
-      openai: {
-        reasoningEffort: "low",
-        reasoningSummary: "auto",
-      },
-    },
-  });
+    if (!body.messages || !Array.isArray(body.messages)) {
+      return NextResponse.json({ error: "Missing messages" }, { status: 400 });
+    }
 
-  return result.toUIMessageStreamResponse({
-    sendReasoning: true,
-  });
+    const activeConfig = await getActiveLLMConfig();
+
+    if (!activeConfig) {
+      return NextResponse.json(
+        {
+          error: "No active LLM configuration found. Configure one in /admin.",
+        },
+        { status: 400 },
+      );
+    }
+
+    return await runAgent({
+      messages: body.messages,
+      llmConfig: activeConfig,
+      abortSignal: req.signal,
+    });
+  } catch (error) {
+    logger.error({ err: error }, "Chat API error");
+    return NextResponse.json(
+      { error: "Failed to process chat request" },
+      { status: 500 },
+    );
+  }
 }
