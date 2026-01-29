@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { testDatabaseConnection } from "@/lib/database";
 import type { DatabaseConfig } from "@/lib/config-store";
+import { logger } from "@/lib/logger/server";
 
 export async function POST(request: Request) {
   try {
@@ -44,8 +45,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json(result);
   } catch (error) {
-    console.error("Connection test error:", error);
-
+    logger.error({ err: error }, "Connection test error");
     const errorMessage =
       error instanceof Error ? error.message : "An unexpected error occurred";
 
