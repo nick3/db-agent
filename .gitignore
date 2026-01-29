@@ -42,3 +42,14 @@ next-env.d.ts
 
 # Turborepo
 .turbo
+/.agents
+/.trae
+/.serena
+/.qwen
+/.opencode
+/.gemini
+/.factory
+/.codex
+/.claude
+/.agent
+/.github
