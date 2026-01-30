@@ -1,6 +1,10 @@
 declare module "oracledb" {
   interface Connection {
-    execute(sql: string, binds?: unknown[], options?: unknown): Promise<{
+    execute(
+      sql: string,
+      binds?: unknown[],
+      options?: unknown,
+    ): Promise<{
       rows?: unknown[][];
       metaData?: unknown[];
     }>;

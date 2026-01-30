@@ -31,7 +31,7 @@ export const logger = pino(
     level,
     redact,
   },
-  transport
+  transport,
 );
 
 export const createServerLogger = (bindings?: Record<string, unknown>) =>
