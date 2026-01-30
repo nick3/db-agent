@@ -49,6 +49,7 @@ interface ConfigStore {
 
   // Database Configs
   dbConfigs: DatabaseConfig[];
+  setDBConfigs: (configs: DatabaseConfig[]) => void;
   addDBConfig: (config: Omit<DatabaseConfig, "id" | "createdAt">) => void;
   updateDBConfig: (id: string, config: Partial<DatabaseConfig>) => void;
   deleteDBConfig: (id: string) => void;
@@ -96,6 +97,7 @@ export const useConfigStore = create<ConfigStore>()(
 
       // Database State
       dbConfigs: [],
+      setDBConfigs: (configs) => set({ dbConfigs: configs }),
       addDBConfig: (config) =>
         set((state) => ({
           dbConfigs: [
