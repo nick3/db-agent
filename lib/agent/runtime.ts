@@ -21,14 +21,34 @@ const DB_AGENT_INSTRUCTIONS = `你是一个数据库查询助手，负责基于�
 - 输出要简洁、结构化，必要时附上你执行的只读 SQL（或关键片段）与结果解读。`;
 
 function getAgentProviderOptions(llmConfig: LLMConfig) {
-  if (llmConfig.provider !== "openai") {
+  const isOpenAICompatible =
+    llmConfig.provider === "openai" || llmConfig.provider === "custom";
+
+  if (!isOpenAICompatible) {
     return undefined;
   }
 
-  const apiMode = llmConfig.apiMode ?? "responses";
-  return apiMode === "chat"
-    ? { openai: OPENAI_CHAT_PROVIDER_OPTIONS }
-    : { openai: OPENAI_RESPONSES_PROVIDER_OPTIONS };
+  const apiMode =
+    llmConfig.apiMode ??
+    (llmConfig.provider === "custom" ? "chat" : "responses");
+
+  if (apiMode === "chat") {
+    return { openai: OPENAI_CHAT_PROVIDER_OPTIONS };
+  }
+
+  // NOTE: Some OpenAI-compatible gateways do not support the Responses API "store"
+  // semantics (e.g. `item_reference`). Disable it for custom providers to improve
+  // compatibility while still using the Responses API.
+  if (llmConfig.provider === "custom") {
+    return {
+      openai: {
+        ...OPENAI_RESPONSES_PROVIDER_OPTIONS,
+        store: false,
+      },
+    };
+  }
+
+  return { openai: OPENAI_RESPONSES_PROVIDER_OPTIONS };
 }
 
 function createAgent(llmConfig: LLMConfig, dbConfig: DatabaseConfig) {
