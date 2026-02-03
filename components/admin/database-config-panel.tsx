@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Plus,
@@ -27,14 +27,45 @@ import {
   Info,
 } from "lucide-react";
 import { useConfigStore, type DatabaseConfig } from "@/lib/config-store";
+import { logger } from "@/lib/logger/client";
 import { cn } from "@/lib/utils";
 
 const dbTypes = [
-  { value: "postgresql", label: "PostgreSQL", color: "text-sky-400", icon: "🐘", defaultPort: 5432 },
-  { value: "mysql", label: "MySQL", color: "text-orange-400", icon: "🐬", defaultPort: 3306 },
-  { value: "sqlite", label: "SQLite", color: "text-blue-400", icon: "📁", defaultPort: 0 },
-  { value: "mssql", label: "SQL Server", color: "text-red-400", icon: "🔷", defaultPort: 1433 },
-  { value: "oracle", label: "Oracle", color: "text-amber-400", icon: "🔶", defaultPort: 1521 },
+  {
+    value: "postgresql",
+    label: "PostgreSQL",
+    color: "text-sky-400",
+    icon: "🐘",
+    defaultPort: 5432,
+  },
+  {
+    value: "mysql",
+    label: "MySQL",
+    color: "text-orange-400",
+    icon: "🐬",
+    defaultPort: 3306,
+  },
+  {
+    value: "sqlite",
+    label: "SQLite",
+    color: "text-blue-400",
+    icon: "📁",
+    defaultPort: 0,
+  },
+  {
+    value: "mssql",
+    label: "SQL Server",
+    color: "text-red-400",
+    icon: "🔷",
+    defaultPort: 1433,
+  },
+  {
+    value: "oracle",
+    label: "Oracle",
+    color: "text-amber-400",
+    icon: "🔶",
+    defaultPort: 1521,
+  },
 ] as const;
 
 interface ConnectionTestResult {
@@ -48,23 +79,22 @@ interface ConnectionTestResult {
 }
 
 export function DatabaseConfigPanel() {
-  const {
-    dbConfigs,
-    addDBConfig,
-    updateDBConfig,
-    deleteDBConfig,
-    setActiveDB,
-  } = useConfigStore();
+  const { dbConfigs, setDBConfigs } = useConfigStore();
 
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState<Record<string, boolean>>({});
 
   // Connection test states
-  const [testingConnection, setTestingConnection] = useState<string | null>(null);
-  const [connectionResults, setConnectionResults] = useState<Record<string, ConnectionTestResult>>({});
+  const [testingConnection, setTestingConnection] = useState<string | null>(
+    null,
+  );
+  const [connectionResults, setConnectionResults] = useState<
+    Record<string, ConnectionTestResult>
+  >({});
   const [testingForm, setTestingForm] = useState(false);
-  const [formTestResult, setFormTestResult] = useState<ConnectionTestResult | null>(null);
+  const [formTestResult, setFormTestResult] =
+    useState<ConnectionTestResult | null>(null);
 
   const [formData, setFormData] = useState<Partial<DatabaseConfig>>({
     name: "",
@@ -93,6 +123,24 @@ export function DatabaseConfigPanel() {
     setFormTestResult(null);
   };
 
+  const loadConfigs = useCallback(async () => {
+    try {
+      const response = await fetch("/api/admin/db-configs");
+      if (!response.ok) {
+        throw new Error("Failed to load DB configs");
+      }
+
+      const data = (await response.json()) as { configs?: DatabaseConfig[] };
+      setDBConfigs(data.configs ?? []);
+    } catch (error) {
+      logger.error({ err: error }, "Failed to load DB configs");
+    }
+  }, [setDBConfigs]);
+
+  useEffect(() => {
+    void loadConfigs();
+  }, [loadConfigs]);
+
   const handleTypeChange = (type: DatabaseConfig["type"]) => {
     const dbInfo = dbTypes.find((db) => db.value === type);
     setFormData({
@@ -104,18 +152,48 @@ export function DatabaseConfigPanel() {
     setFormTestResult(null);
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!formData.name || !formData.database) return;
-    if (formData.type !== "sqlite" && (!formData.host || !formData.username)) return;
+    if (formData.type !== "sqlite" && (!formData.host || !formData.username))
+      return;
 
-    if (editingId) {
-      updateDBConfig(editingId, formData);
-      setEditingId(null);
-    } else {
-      addDBConfig(formData as Omit<DatabaseConfig, "id" | "createdAt">);
-      setIsAdding(false);
+    const payload = {
+      name: formData.name,
+      type: formData.type,
+      host: formData.host ?? "",
+      port: formData.port ?? 5432,
+      username: formData.username ?? "",
+      password: formData.password ?? "",
+      database: formData.database,
+      ssl: formData.ssl ?? false,
+      isActive: formData.isActive ?? false,
+    };
+
+    try {
+      const response = await fetch("/api/admin/db-configs", {
+        method: editingId ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          editingId ? { ...payload, id: editingId } : payload,
+        ),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to save DB config");
+      }
+
+      await loadConfigs();
+
+      if (editingId) {
+        setEditingId(null);
+      } else {
+        setIsAdding(false);
+      }
+
+      resetForm();
+    } catch (error) {
+      logger.error({ err: error }, "Failed to save DB config");
     }
-    resetForm();
   };
 
   const handleEdit = (config: DatabaseConfig) => {
@@ -131,24 +209,55 @@ export function DatabaseConfigPanel() {
     resetForm();
   };
 
+  const handleDelete = async (id: string) => {
+    try {
+      const response = await fetch("/api/admin/db-configs", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to delete DB config");
+      }
+
+      await loadConfigs();
+    } catch (error) {
+      logger.error({ err: error }, "Failed to delete DB config");
+    }
+  };
+
+  const handleSetActive = async (id: string) => {
+    try {
+      const response = await fetch("/api/admin/db-configs", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, setActive: true }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to set active DB config");
+      }
+
+      await loadConfigs();
+    } catch (error) {
+      logger.error({ err: error }, "Failed to set active DB config");
+    }
+  };
+
   // Test connection for existing config
   const testConnection = async (config: DatabaseConfig) => {
     setTestingConnection(config.id);
-    setConnectionResults((prev) => ({ ...prev, [config.id]: undefined as unknown as ConnectionTestResult }));
+    setConnectionResults((prev) => ({
+      ...prev,
+      [config.id]: undefined as unknown as ConnectionTestResult,
+    }));
 
     try {
       const response = await fetch("/api/admin/test-connection", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: config.type,
-          host: config.host,
-          port: config.port,
-          username: config.username,
-          password: config.password,
-          database: config.database,
-          ssl: config.ssl,
-        }),
+        body: JSON.stringify({ id: config.id }),
       });
 
       const result: ConnectionTestResult = await response.json();
@@ -169,7 +278,8 @@ export function DatabaseConfigPanel() {
   // Test connection for form (new/editing)
   const testFormConnection = async () => {
     if (!formData.database) return;
-    if (formData.type !== "sqlite" && (!formData.host || !formData.username)) return;
+    if (formData.type !== "sqlite" && (!formData.host || !formData.username))
+      return;
 
     setTestingForm(true);
     setFormTestResult(null);
@@ -202,18 +312,19 @@ export function DatabaseConfigPanel() {
   };
 
   const isSQLite = formData.type === "sqlite";
-  const canTestForm = formData.database && (isSQLite || (formData.host && formData.username));
+  const canTestForm =
+    formData.database && (isSQLite || (formData.host && formData.username));
 
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="flex items-center gap-3 text-xl font-bold text-white">
+          <h2 className="flex items-center gap-3 font-bold text-white text-xl">
             <Database className="h-5 w-5 text-sky-400" />
             Database Connections
           </h2>
-          <p className="mt-1 text-sm text-[#6a6a7a]">
+          <p className="mt-1 text-[#6a6a7a] text-sm">
             Configure your database connections for natural language queries
           </p>
         </div>
@@ -222,7 +333,7 @@ export function DatabaseConfigPanel() {
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
             onClick={() => setIsAdding(true)}
-            className="flex items-center gap-2 rounded-lg border border-sky-500/30 bg-sky-500/10 px-4 py-2 text-sm font-medium text-sky-400 transition-all hover:bg-sky-500/20"
+            className="flex items-center gap-2 rounded-lg border border-sky-500/30 bg-sky-500/10 px-4 py-2 font-medium text-sky-400 text-sm transition-all hover:bg-sky-500/20"
           >
             <Plus className="h-4 w-4" />
             Add Database
@@ -242,17 +353,17 @@ export function DatabaseConfigPanel() {
             <div className="rounded-xl border border-sky-500/20 bg-gradient-to-b from-sky-500/5 to-transparent p-6">
               <div className="mb-6 flex items-center gap-2">
                 <div className="h-2 w-2 animate-pulse rounded-full bg-sky-400" />
-                <span className="text-sm font-medium text-sky-400">
+                <span className="font-medium text-sky-400 text-sm">
                   {editingId ? "EDIT_CONNECTION" : "NEW_CONNECTION"}
                 </span>
               </div>
 
               {/* Database Type Selection */}
               <div className="mb-6 space-y-2">
-                <label className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-[#6a6a7a]">
+                <div className="flex items-center gap-2 font-medium text-[#6a6a7a] text-xs uppercase tracking-wider">
                   <Server className="h-3 w-3" />
                   Database Type
-                </label>
+                </div>
                 <div className="grid grid-cols-5 gap-2">
                   {dbTypes.map((db) => (
                     <button
@@ -262,11 +373,11 @@ export function DatabaseConfigPanel() {
                         "flex flex-col items-center gap-2 rounded-lg border p-4 transition-all",
                         formData.type === db.value
                           ? `border-current bg-current/10 ${db.color}`
-                          : "border-[#1a1a2e] text-[#4a4a5a] hover:border-[#2a2a3e] hover:text-[#6a6a7a]"
+                          : "border-[#1a1a2e] text-[#4a4a5a] hover:border-[#2a2a3e] hover:text-[#6a6a7a]",
                       )}
                     >
                       <span className="text-2xl">{db.icon}</span>
-                      <span className="text-xs font-medium">{db.label}</span>
+                      <span className="font-medium text-xs">{db.label}</span>
                     </button>
                   ))}
                 </div>
@@ -275,14 +386,20 @@ export function DatabaseConfigPanel() {
               <div className="grid gap-6 md:grid-cols-2">
                 {/* Connection Name */}
                 <div className="space-y-2">
-                  <label className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-[#6a6a7a]">
+                  <label
+                    htmlFor="db-connection-name"
+                    className="flex items-center gap-2 font-medium text-[#6a6a7a] text-xs uppercase tracking-wider"
+                  >
                     <Database className="h-3 w-3" />
                     Connection Name
                   </label>
                   <input
+                    id="db-connection-name"
                     type="text"
                     value={formData.name}
-                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    onChange={(e) =>
+                      setFormData({ ...formData, name: e.target.value })
+                    }
                     placeholder="e.g., Production DB"
                     className="w-full rounded-lg border border-[#1a1a2e] bg-[#0a0a0f] px-4 py-3 text-sm text-white placeholder-[#3a3a4a] outline-none transition-all focus:border-sky-500/50 focus:ring-2 focus:ring-sky-500/20"
                   />
@@ -290,18 +407,24 @@ export function DatabaseConfigPanel() {
 
                 {/* Database Name */}
                 <div className="space-y-2">
-                  <label className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-[#6a6a7a]">
+                  <label
+                    htmlFor="db-database-name"
+                    className="flex items-center gap-2 font-medium text-[#6a6a7a] text-xs uppercase tracking-wider"
+                  >
                     <Hash className="h-3 w-3" />
                     {isSQLite ? "File Path" : "Database Name"}
                   </label>
                   <input
+                    id="db-database-name"
                     type="text"
                     value={formData.database}
                     onChange={(e) => {
                       setFormData({ ...formData, database: e.target.value });
                       setFormTestResult(null);
                     }}
-                    placeholder={isSQLite ? "/path/to/database.db" : "my_database"}
+                    placeholder={
+                      isSQLite ? "/path/to/database.db" : "my_database"
+                    }
                     className="w-full rounded-lg border border-[#1a1a2e] bg-[#0a0a0f] px-4 py-3 font-mono text-sm text-white placeholder-[#3a3a4a] outline-none transition-all focus:border-sky-500/50 focus:ring-2 focus:ring-sky-500/20"
                   />
                 </div>
@@ -310,11 +433,15 @@ export function DatabaseConfigPanel() {
                   <>
                     {/* Host */}
                     <div className="space-y-2">
-                      <label className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-[#6a6a7a]">
+                      <label
+                        htmlFor="db-host"
+                        className="flex items-center gap-2 font-medium text-[#6a6a7a] text-xs uppercase tracking-wider"
+                      >
                         <Globe className="h-3 w-3" />
                         Host / IP Address
                       </label>
                       <input
+                        id="db-host"
                         type="text"
                         value={formData.host}
                         onChange={(e) => {
@@ -328,15 +455,22 @@ export function DatabaseConfigPanel() {
 
                     {/* Port */}
                     <div className="space-y-2">
-                      <label className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-[#6a6a7a]">
+                      <label
+                        htmlFor="db-port"
+                        className="flex items-center gap-2 font-medium text-[#6a6a7a] text-xs uppercase tracking-wider"
+                      >
                         <Hash className="h-3 w-3" />
                         Port
                       </label>
                       <input
+                        id="db-port"
                         type="number"
                         value={formData.port}
                         onChange={(e) => {
-                          setFormData({ ...formData, port: parseInt(e.target.value) || 0 });
+                          setFormData({
+                            ...formData,
+                            port: parseInt(e.target.value, 10) || 0,
+                          });
                           setFormTestResult(null);
                         }}
                         placeholder="5432"
@@ -346,15 +480,22 @@ export function DatabaseConfigPanel() {
 
                     {/* Username */}
                     <div className="space-y-2">
-                      <label className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-[#6a6a7a]">
+                      <label
+                        htmlFor="db-username"
+                        className="flex items-center gap-2 font-medium text-[#6a6a7a] text-xs uppercase tracking-wider"
+                      >
                         <User className="h-3 w-3" />
                         Username
                       </label>
                       <input
+                        id="db-username"
                         type="text"
                         value={formData.username}
                         onChange={(e) => {
-                          setFormData({ ...formData, username: e.target.value });
+                          setFormData({
+                            ...formData,
+                            username: e.target.value,
+                          });
                           setFormTestResult(null);
                         }}
                         placeholder="db_user"
@@ -364,16 +505,23 @@ export function DatabaseConfigPanel() {
 
                     {/* Password */}
                     <div className="space-y-2">
-                      <label className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-[#6a6a7a]">
+                      <label
+                        htmlFor="db-password"
+                        className="flex items-center gap-2 font-medium text-[#6a6a7a] text-xs uppercase tracking-wider"
+                      >
                         <Lock className="h-3 w-3" />
                         Password
                       </label>
                       <div className="relative">
                         <input
+                          id="db-password"
                           type={showPassword["form"] ? "text" : "password"}
                           value={formData.password}
                           onChange={(e) => {
-                            setFormData({ ...formData, password: e.target.value });
+                            setFormData({
+                              ...formData,
+                              password: e.target.value,
+                            });
                             setFormTestResult(null);
                           }}
                           placeholder="••••••••"
@@ -381,10 +529,19 @@ export function DatabaseConfigPanel() {
                         />
                         <button
                           type="button"
-                          onClick={() => setShowPassword({ ...showPassword, form: !showPassword["form"] })}
-                          className="absolute right-3 top-1/2 -translate-y-1/2 text-[#4a4a5a] hover:text-[#6a6a7a]"
+                          onClick={() =>
+                            setShowPassword({
+                              ...showPassword,
+                              form: !showPassword["form"],
+                            })
+                          }
+                          className="absolute top-1/2 right-3 -translate-y-1/2 text-[#4a4a5a] hover:text-[#6a6a7a]"
                         >
-                          {showPassword["form"] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                          {showPassword["form"] ? (
+                            <EyeOff className="h-4 w-4" />
+                          ) : (
+                            <Eye className="h-4 w-4" />
+                          )}
                         </button>
                       </div>
                     </div>
@@ -399,19 +556,29 @@ export function DatabaseConfigPanel() {
                         }}
                         className={cn(
                           "relative h-6 w-11 rounded-full transition-colors",
-                          formData.ssl ? "bg-sky-500" : "bg-[#1a1a2e]"
+                          formData.ssl ? "bg-sky-500" : "bg-[#1a1a2e]",
                         )}
                       >
                         <span
                           className={cn(
                             "absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform",
-                            formData.ssl && "translate-x-5"
+                            formData.ssl && "translate-x-5",
                           )}
                         />
                       </button>
                       <div className="flex items-center gap-2">
-                        <Shield className={cn("h-4 w-4", formData.ssl ? "text-sky-400" : "text-[#4a4a5a]")} />
-                        <span className={cn("text-sm", formData.ssl ? "text-white" : "text-[#6a6a7a]")}>
+                        <Shield
+                          className={cn(
+                            "h-4 w-4",
+                            formData.ssl ? "text-sky-400" : "text-[#4a4a5a]",
+                          )}
+                        />
+                        <span
+                          className={cn(
+                            "text-sm",
+                            formData.ssl ? "text-white" : "text-[#6a6a7a]",
+                          )}
+                        >
                           Enable SSL/TLS Connection
                         </span>
                       </div>
@@ -431,7 +598,7 @@ export function DatabaseConfigPanel() {
                       "mt-6 rounded-lg border p-4",
                       formTestResult.success
                         ? "border-emerald-500/30 bg-emerald-500/10"
-                        : "border-red-500/30 bg-red-500/10"
+                        : "border-red-500/30 bg-red-500/10",
                     )}
                   >
                     <div className="flex items-start gap-3">
@@ -441,13 +608,19 @@ export function DatabaseConfigPanel() {
                         <XCircle className="h-5 w-5 shrink-0 text-red-400" />
                       )}
                       <div className="min-w-0 flex-1">
-                        <p className={cn(
-                          "font-medium",
-                          formTestResult.success ? "text-emerald-400" : "text-red-400"
-                        )}>
-                          {formTestResult.success ? "Connection Successful!" : "Connection Failed"}
+                        <p
+                          className={cn(
+                            "font-medium",
+                            formTestResult.success
+                              ? "text-emerald-400"
+                              : "text-red-400",
+                          )}
+                        >
+                          {formTestResult.success
+                            ? "Connection Successful!"
+                            : "Connection Failed"}
                         </p>
-                        <p className="mt-1 text-sm text-[#8a8a9a]">
+                        <p className="mt-1 text-[#8a8a9a] text-sm">
                           {formTestResult.message}
                         </p>
                         {formTestResult.details && (
@@ -464,7 +637,9 @@ export function DatabaseConfigPanel() {
                             {formTestResult.details.database && (
                               <div className="flex items-center gap-1.5">
                                 <Database className="h-3 w-3 text-[#4a4a5a]" />
-                                <span className="text-[#6a6a7a]">Database:</span>
+                                <span className="text-[#6a6a7a]">
+                                  Database:
+                                </span>
                                 <span className="font-mono text-[#a0a0b0]">
                                   {formTestResult.details.database}
                                 </span>
@@ -489,9 +664,10 @@ export function DatabaseConfigPanel() {
 
               {/* Security Notice */}
               <div className="mt-6">
-                <p className="flex items-center gap-1.5 text-xs text-amber-400/70">
+                <p className="flex items-center gap-1.5 text-amber-400/70 text-xs">
                   <AlertCircle className="h-3 w-3" />
-                  Credentials are stored locally. For production, use environment variables.
+                  Credentials are stored on the server. For production, use
+                  environment variables or a secrets manager.
                 </p>
               </div>
 
@@ -503,7 +679,7 @@ export function DatabaseConfigPanel() {
                   whileTap={{ scale: 0.98 }}
                   onClick={testFormConnection}
                   disabled={!canTestForm || testingForm}
-                  className="flex items-center gap-2 rounded-lg border border-[#1a1a2e] bg-[#0a0a0f] px-4 py-2 text-sm font-medium text-[#8a8a9a] transition-all hover:border-emerald-500/30 hover:text-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="flex items-center gap-2 rounded-lg border border-[#1a1a2e] bg-[#0a0a0f] px-4 py-2 font-medium text-[#8a8a9a] text-sm transition-all hover:border-emerald-500/30 hover:text-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {testingForm ? (
                     <>
@@ -521,7 +697,7 @@ export function DatabaseConfigPanel() {
                 <div className="flex items-center gap-3">
                   <button
                     onClick={handleCancel}
-                    className="flex items-center gap-2 rounded-lg border border-[#1a1a2e] px-4 py-2 text-sm text-[#6a6a7a] transition-all hover:border-[#2a2a3e] hover:text-[#8a8a9a]"
+                    className="flex items-center gap-2 rounded-lg border border-[#1a1a2e] px-4 py-2 text-[#6a6a7a] text-sm transition-all hover:border-[#2a2a3e] hover:text-[#8a8a9a]"
                   >
                     <X className="h-4 w-4" />
                     Cancel
@@ -530,8 +706,12 @@ export function DatabaseConfigPanel() {
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
                     onClick={handleSubmit}
-                    disabled={!formData.name || !formData.database || (!isSQLite && (!formData.host || !formData.username))}
-                    className="flex items-center gap-2 rounded-lg bg-sky-500 px-4 py-2 text-sm font-medium text-black transition-all hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={
+                      !formData.name ||
+                      !formData.database ||
+                      (!isSQLite && (!formData.host || !formData.username))
+                    }
+                    className="flex items-center gap-2 rounded-lg bg-sky-500 px-4 py-2 font-medium text-black text-sm transition-all hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <Check className="h-4 w-4" />
                     {editingId ? "Update" : "Save"} Connection
@@ -550,16 +730,19 @@ export function DatabaseConfigPanel() {
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="rounded-xl border border-dashed border-[#1a1a2e] bg-[#0a0a0f]/50 p-12 text-center"
+              className="rounded-xl border border-[#1a1a2e] border-dashed bg-[#0a0a0f]/50 p-12 text-center"
             >
               <Database className="mx-auto h-12 w-12 text-[#2a2a3a]" />
-              <h3 className="mt-4 text-lg font-medium text-[#4a4a5a]">No databases configured</h3>
-              <p className="mt-2 text-sm text-[#3a3a4a]">
-                Add your first database connection to start querying with natural language
+              <h3 className="mt-4 font-medium text-[#4a4a5a] text-lg">
+                No databases configured
+              </h3>
+              <p className="mt-2 text-[#3a3a4a] text-sm">
+                Add your first database connection to start querying with
+                natural language
               </p>
               <button
                 onClick={() => setIsAdding(true)}
-                className="mt-6 inline-flex items-center gap-2 rounded-lg border border-sky-500/30 bg-sky-500/10 px-4 py-2 text-sm font-medium text-sky-400 transition-all hover:bg-sky-500/20"
+                className="mt-6 inline-flex items-center gap-2 rounded-lg border border-sky-500/30 bg-sky-500/10 px-4 py-2 font-medium text-sky-400 text-sm transition-all hover:bg-sky-500/20"
               >
                 <Plus className="h-4 w-4" />
                 Add Your First Database
@@ -583,40 +766,44 @@ export function DatabaseConfigPanel() {
                     "group relative rounded-xl border bg-[#0f0f18] p-5 transition-all",
                     config.isActive
                       ? "border-sky-500/30 shadow-[0_0_30px_-10px_rgba(14,165,233,0.2)]"
-                      : "border-[#1a1a2e] hover:border-[#2a2a3e]"
+                      : "border-[#1a1a2e] hover:border-[#2a2a3e]",
                   )}
                 >
                   {config.isActive && (
-                    <div className="absolute -top-px left-6 right-6 h-px bg-gradient-to-r from-transparent via-sky-500 to-transparent" />
+                    <div className="absolute -top-px right-6 left-6 h-px bg-gradient-to-r from-transparent via-sky-500 to-transparent" />
                   )}
 
                   <div className="flex items-start justify-between">
                     <div className="flex items-start gap-4">
-                      <div className={cn(
-                        "flex h-12 w-12 items-center justify-center rounded-lg border text-2xl",
-                        config.isActive
-                          ? "border-sky-500/30 bg-sky-500/10"
-                          : "border-[#1a1a2e] bg-[#0a0a0f]"
-                      )}>
+                      <div
+                        className={cn(
+                          "flex h-12 w-12 items-center justify-center rounded-lg border text-2xl",
+                          config.isActive
+                            ? "border-sky-500/30 bg-sky-500/10"
+                            : "border-[#1a1a2e] bg-[#0a0a0f]",
+                        )}
+                      >
                         {dbInfo?.icon}
                       </div>
                       <div>
                         <div className="flex items-center gap-3">
-                          <h3 className="font-semibold text-white">{config.name}</h3>
+                          <h3 className="font-semibold text-white">
+                            {config.name}
+                          </h3>
                           {config.isActive && (
-                            <span className="flex items-center gap-1 rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-sky-400">
+                            <span className="flex items-center gap-1 rounded-full bg-sky-500/10 px-2 py-0.5 font-medium text-[10px] text-sky-400 uppercase tracking-wider">
                               <Zap className="h-2.5 w-2.5" />
                               Active
                             </span>
                           )}
                           {result?.success && (
-                            <span className="flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400">
+                            <span className="flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 font-medium text-[10px] text-emerald-400">
                               <CheckCircle2 className="h-2.5 w-2.5" />
                               Connected
                             </span>
                           )}
                           {result && !result.success && (
-                            <span className="flex items-center gap-1 rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] font-medium text-red-400">
+                            <span className="flex items-center gap-1 rounded-full bg-red-500/10 px-2 py-0.5 font-medium text-[10px] text-red-400">
                               <XCircle className="h-2.5 w-2.5" />
                               Failed
                             </span>
@@ -628,14 +815,18 @@ export function DatabaseConfigPanel() {
                           </span>
                           <span className="text-[#3a3a4a]">•</span>
                           {config.type === "sqlite" ? (
-                            <span className="font-mono text-[#6a6a7a]">{config.database}</span>
+                            <span className="font-mono text-[#6a6a7a]">
+                              {config.database}
+                            </span>
                           ) : (
                             <>
                               <span className="font-mono text-[#6a6a7a]">
                                 {config.host}:{config.port}
                               </span>
                               <span className="text-[#3a3a4a]">•</span>
-                              <span className="font-mono text-[#4a4a5a]">{config.database}</span>
+                              <span className="font-mono text-[#4a4a5a]">
+                                {config.database}
+                              </span>
                               {config.ssl && (
                                 <>
                                   <span className="text-[#3a3a4a]">•</span>
@@ -673,7 +864,7 @@ export function DatabaseConfigPanel() {
 
                         {/* Connection error message */}
                         {result && !result.success && (
-                          <p className="mt-2 text-xs text-red-400/80">
+                          <p className="mt-2 text-red-400/80 text-xs">
                             {result.message}
                           </p>
                         )}
@@ -684,7 +875,7 @@ export function DatabaseConfigPanel() {
                       <button
                         onClick={() => testConnection(config)}
                         disabled={isTesting}
-                        className="flex items-center gap-2 rounded-lg border border-[#1a1a2e] bg-[#0a0a0f] px-3 py-1.5 text-xs font-medium text-[#6a6a7a] transition-all hover:border-emerald-500/30 hover:text-emerald-400 disabled:opacity-50"
+                        className="flex items-center gap-2 rounded-lg border border-[#1a1a2e] bg-[#0a0a0f] px-3 py-1.5 font-medium text-[#6a6a7a] text-xs transition-all hover:border-emerald-500/30 hover:text-emerald-400 disabled:opacity-50"
                       >
                         {isTesting ? (
                           <Loader2 className="h-3 w-3 animate-spin" />
@@ -695,8 +886,8 @@ export function DatabaseConfigPanel() {
                       </button>
                       {!config.isActive && (
                         <button
-                          onClick={() => setActiveDB(config.id)}
-                          className="rounded-lg border border-[#1a1a2e] bg-[#0a0a0f] px-3 py-1.5 text-xs font-medium text-[#6a6a7a] transition-all hover:border-sky-500/30 hover:text-sky-400"
+                          onClick={() => void handleSetActive(config.id)}
+                          className="rounded-lg border border-[#1a1a2e] bg-[#0a0a0f] px-3 py-1.5 font-medium text-[#6a6a7a] text-xs transition-all hover:border-sky-500/30 hover:text-sky-400"
                         >
                           Set Active
                         </button>
@@ -708,7 +899,7 @@ export function DatabaseConfigPanel() {
                         <Edit3 className="h-4 w-4" />
                       </button>
                       <button
-                        onClick={() => deleteDBConfig(config.id)}
+                        onClick={() => void handleDelete(config.id)}
                         className="rounded-lg border border-[#1a1a2e] p-2 text-[#4a4a5a] transition-all hover:border-red-500/30 hover:text-red-400"
                       >
                         <Trash2 className="h-4 w-4" />
